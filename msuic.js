@@ -216,49 +216,42 @@ async function fetchVideoInfo(urlOrQuery) {
 }
 
 async function streamAudio(url) {
-    // If url is a direct audio stream, use it directly
+    // If url is a direct audio stream, use it directly (most reliable)
     if (url.startsWith('http') && (url.includes('googlevideo.com') || url.includes('audio')) && !url.includes('youtube.com')) {
         return createAudioResource(url, { inputType: StreamType.WebmOpus });
     }
-    // Use yt-dlp to extract WebM/Opus audio only, with a timeout
+    // If not a direct stream, fetch a fresh audio URL using yt-dlp
     return new Promise((resolve, reject) => {
-        const ytdlp = spawn('yt-dlp', [
-            '-f', 'bestaudio[ext=webm][acodec=opus][abr<=128]/bestaudio', // Audio only, Opus codec
-            '--no-playlist',
+        const args = [
+            url.startsWith('http') ? url : `ytsearch1:${url}`,
+            '-f', 'bestaudio[ext=webm][acodec=opus][abr<=128]/bestaudio',
             '-q',
-            '-o', '-', url
-        ]);
-
-        // Timeout after 30 seconds
-        const timeout = setTimeout(() => {
-            ytdlp.kill('SIGKILL');
-            reject(new Error('yt-dlp process timed out'));
-        }, 30000);
-
-        let errorOutput = '';
-        ytdlp.stderr.on('data', data => {
-            errorOutput += data.toString();
+            '-j' // dump json
+        ];
+        const ytdlp = spawn('yt-dlp', args);
+        let output = '';
+        ytdlp.stdout.on('data', data => {
+            output += data.toString();
         });
-
-        ytdlp.on('error', err => {
-            clearTimeout(timeout);
-            reject(err);
+        ytdlp.stderr.on('data', data => {
+            // Only log errors, don't reject yet
         });
         ytdlp.on('close', code => {
-            clearTimeout(timeout);
-            if (code !== 0 || errorOutput.includes('ERROR')) {
-                return reject(new Error(`yt-dlp exited with code ${code}: ${errorOutput}`));
+            if (code !== 0) {
+                return reject(new Error(`yt-dlp exited with code ${code}`));
+            }
+            try {
+                const info = JSON.parse(output);
+                if (info.url && info.url.startsWith('http')) {
+                    // Use the direct audio URL
+                    resolve(createAudioResource(info.url, { inputType: StreamType.WebmOpus }));
+                } else {
+                    reject(new Error('No direct audio URL found'));
+                }
+            } catch (e) {
+                reject(e);
             }
         });
-
-        // Resolve immediately with the audio resource
-        try {
-            const resource = createAudioResource(ytdlp.stdout, { inputType: StreamType.WebmOpus });
-            resolve(resource);
-        } catch (err) {
-            clearTimeout(timeout);
-            reject(err);
-        }
     });
 }
 
