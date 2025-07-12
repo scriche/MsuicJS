@@ -216,42 +216,32 @@ async function fetchVideoInfo(urlOrQuery) {
 }
 
 async function streamAudio(url) {
-    // If url is a direct audio stream, use it directly (most reliable)
-    if (url.startsWith('http') && (url.includes('googlevideo.com') || url.includes('audio')) && !url.includes('youtube.com')) {
-        return createAudioResource(url, { inputType: StreamType.WebmOpus });
-    }
-    // If not a direct stream, fetch a fresh audio URL using yt-dlp
-    return new Promise((resolve, reject) => {
-        const args = [
-            url.startsWith('http') ? url : `ytsearch1:${url}`,
-            '-f', 'bestaudio[ext=webm][acodec=opus][abr<=128]/bestaudio',
-            '-q',
-            '-j' // dump json
-        ];
-        const ytdlp = spawn('yt-dlp', args);
-        let output = '';
-        ytdlp.stdout.on('data', data => {
-            output += data.toString();
-        });
-        ytdlp.stderr.on('data', data => {
-            // Only log errors, don't reject yet
-        });
-        ytdlp.on('close', code => {
-            if (code !== 0) {
-                return reject(new Error(`yt-dlp exited with code ${code}`));
-            }
-            try {
-                const info = JSON.parse(output);
-                if (info.url && info.url.startsWith('http')) {
-                    // Use the direct audio URL
-                    resolve(createAudioResource(info.url, { inputType: StreamType.WebmOpus }));
-                } else {
-                    reject(new Error('No direct audio URL found'));
-                }
-            } catch (e) {
-                reject(e);
-            }
-        });
+    const ffmpeg = spawn('ffmpeg', [
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5',
+        '-i', url,
+        '-analyzeduration', '0',
+        '-loglevel', '0',
+        '-f', 'webm',
+        '-map', 'a',
+        '-acodec', 'libopus',
+        '-ar', '48000',
+        '-ac', '2',
+        '-b:a', '96k',
+        'pipe:1'
+    ]);
+
+    ffmpeg.stderr.on('data', data => {
+        console.error(`ffmpeg stderr: ${data}`);
+    });
+
+    ffmpeg.on('error', err => {
+        console.error('Failed to start ffmpeg:', err);
+    });
+
+    return createAudioResource(ffmpeg.stdout, {
+        inputType: StreamType.WebmOpus
     });
 }
 
@@ -273,7 +263,7 @@ async function playNext(guildId, channel) {
     // Remove previous listeners to avoid duplicate events
     player.removeAllListeners(AudioPlayerStatus.Idle);
     player.removeAllListeners('error');
-    // ...existing code...
+
     // Get the next song
     const song = queue.songs.shift();
     // Add error handler to prevent crashes
