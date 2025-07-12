@@ -1,0 +1,14 @@
+{
+  "name": "msuicjs",
+  "version": "1.0.0",
+  "main": "msuic.js",
+  "keywords": [],
+  "author": "Scriche",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@discordjs/voice": "0.18.0",
+    "discord.js": "14.21.0",
+    "dotenv": "17.2.0"
+  }
+}
