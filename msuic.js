@@ -150,14 +150,17 @@ async function queueSong({ interaction, query, guild, member, channel }) {
         console.error('Failed to send embed reply:', e);
     }
 
-    let connection = getVoiceConnection(guild.id);
-    if (!connection) {
-        connection = joinVoiceChannel({
+    const { DAVESession } = require('@snazzah/davey');
+
+    let dave = queues.get(`${guild.id}-dave`);
+    if (!dave) {
+        dave = new DAVESession({
             channelId: voiceChannel.id,
             guildId: guild.id,
             adapterCreator: guild.voiceAdapterCreator,
             selfDeaf: true
         });
+        queues.set(`${guild.id}-dave`, dave);
     }
     // Only start playback if nothing is currently playing
     if (wasEmpty) {
