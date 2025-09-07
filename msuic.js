@@ -1,11 +1,9 @@
 // Full-featured Discord Music Bot in JavaScript (discord.js v14)
 // Includes: Queue, YouTube search, playlist support, reconnects, slash commands
 
-require('dotenv').config();
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, Collection, Events, EmbedBuilder, InteractionResponseFlags, MessageFlags } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, getVoiceConnection, AudioPlayerStatus, StreamType } = require('@discordjs/voice');
 const { spawn, exec } = require('child_process');
-const path = require('path');
 
 const client = new Client({
     intents: [
@@ -18,7 +16,7 @@ const client = new Client({
 
 const queues = new Map();
 
-client.once('ready', () => {
+client.once('clientReady', () => {
     console.log(`${client.user.tag} has connected to Discord!`);
     client.user.setActivity("Music");
 });
