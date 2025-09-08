@@ -16,7 +16,7 @@ const client = new Client({
 
 const queues = new Map();
 
-client.once('clientReady', () => {
+client.once('ready', () => {
     console.log(`${client.user.tag} has connected to Discord!`);
     client.user.setActivity("Music");
 });
@@ -152,15 +152,31 @@ async function queueSong({ interaction, query, guild, member, channel }) {
 
     const { DAVESession } = require('@snazzah/davey');
 
-    let dave = queues.get(`${guild.id}-dave`);
-    if (!dave) {
-        dave = new DAVESession({
+    // join the voice channel normally first
+    let connection = getVoiceConnection(guild.id);
+    if (!connection) {
+        connection = joinVoiceChannel({
             channelId: voiceChannel.id,
             guildId: guild.id,
             adapterCreator: guild.voiceAdapterCreator,
-            selfDeaf: true
+            selfDeaf: true,
+            selfMute: false,
         });
+    }
+
+    // create DAVE session and bind it to the connection
+    let dave = queues.get(`${guild.id}-dave`);
+    if (!dave) {
+        dave = new DAVESession(
+            1,                 // protocol version
+            client.user.id,    // bot user ID (string)
+            voiceChannel.id,   // voice channel ID (string)
+            null               // let it generate a key pair
+        );
         queues.set(`${guild.id}-dave`, dave);
+
+        // tell the voice connection to use DAVE
+        connection.configureNetworking(dave);
     }
     // Only start playback if nothing is currently playing
     if (wasEmpty) {
