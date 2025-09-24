@@ -377,14 +377,24 @@ client.on(Events.InteractionCreate, async interaction => {
 
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
     try {
-        const connection = getVoiceConnection(oldState.guild.id);
-        if (connection && newState.channelId === null && oldState.channel?.members.size === 1) {
-            connection.destroy();
-            queues.delete(oldState.guild.id);
+        if (oldState.member?.id === client.user.id && !newState.channelId) {
+            console.log(`Bot was disconnected in ${oldState.guild.name}`);
+            const connection = getVoiceConnection(oldState.guild.id);
+            if (connection) connection.destroy();
         }
     } catch (e) {
         console.error('VoiceStateUpdate error:', e);
     }
+});
+
+process.on('uncaughtException', err => {
+    console.error('Uncaught Exception:', err);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', reason => {
+    console.error('Unhandled Rejection:', reason);
+    process.exit(1);
 });
 
 client.on('shardDisconnect', (_, shardId) => {
