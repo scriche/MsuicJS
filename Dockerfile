@@ -25,5 +25,5 @@ COPY msuic.js ./
 # Set environment variables (override with your own .env in production)
 ENV NODE_ENV=production
 
-# Command to run the bot
-CMD ["node", "msuic.js"]
+# Download yt-dlp and set permissions, then run the bot
+CMD ["bash", "-c", "curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp && node msuic.js"]
