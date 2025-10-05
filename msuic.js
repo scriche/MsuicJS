@@ -16,7 +16,7 @@ const client = new Client({
 
 const queues = new Map();
 
-client.once('ready', () => {
+client.once(Events.ClientReady, () => {
     console.log(`${client.user.tag} has connected to Discord!`);
     client.user.setActivity("Music");
 });
@@ -381,6 +381,18 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
             console.log(`Bot was disconnected in ${oldState.guild.name}`);
             const connection = getVoiceConnection(oldState.guild.id);
             if (connection) connection.destroy();
+        }
+        const channel = oldState.channel;
+        if (!channel) return;
+        const botMember = channel.guild.members.me;
+        if (!botMember?.voice.channelId) return;
+        if (channel.id === botMember.voice.channelId) {
+            const nonBotMembers = channel.members.filter(m => !m.user.bot);
+            if (nonBotMembers.size === 0) {
+            console.log(`Bot is alone in ${channel.name}, disconnecting...`);
+            const connection = getVoiceConnection(channel.guild.id);
+            if (connection) connection.destroy();
+            }
         }
     } catch (e) {
         console.error('VoiceStateUpdate error:', e);
