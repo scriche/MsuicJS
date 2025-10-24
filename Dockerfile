@@ -1,14 +1,12 @@
 # Use official Node.js LTS image
 FROM node:20-slim
 
-# Install ffmpeg, curl, and cron
+# Install yt-dlp and ffmpeg for audio extraction
 RUN apt-get update && \
-    apt-get install -y ffmpeg curl cron && \
+    apt-get install -y ffmpeg curl && \
+    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
+    chmod a+rx /usr/local/bin/yt-dlp && \
     apt-get clean
-
-# Setup cron job for yt-dlp updates
-RUN echo "0 * * * * root /app/scripts/update-ytdlp.sh >> /var/log/ytdlp-update.log 2>&1" > /etc/cron.d/ytdlp-update && \
-    chmod 0644 /etc/cron.d/ytdlp-update
 
 # Set working directory
 WORKDIR /app
@@ -27,9 +25,5 @@ COPY msuic.js ./
 # Set environment variables (override with your own .env in production)
 ENV NODE_ENV=production
 
-# Create scripts directory and copy scripts
-COPY scripts /app/scripts
-RUN chmod +x /app/scripts/*.sh
-
-# Use the entrypoint script
-ENTRYPOINT ["/app/scripts/entrypoint.sh"]
+# Download yt-dlp and set permissions, then run the bot
+CMD ["bash", "-c", "curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp && node msuic.js"]
