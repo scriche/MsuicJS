@@ -133,9 +133,26 @@ async function queueSong({ interaction, query, guild, member, channel }) {
         try {
             song = await fetchVideoInfo(query, queryType);
         } catch (e) {
-            console.error('Error fetching video info:', e);
-            await interaction.editReply({ content: "Failed to search or fetch audio." });
-            return;
+            // Handle error and inform user gracefully
+            switch (e.message) {
+                case 'No audio URL found':
+                    await interaction.editReply({ content: "Could not extract audio from the provided URL." });
+                    break;
+                case 'Video not found':
+                    await interaction.editReply({ content: "The requested video could not be found." });
+                    break;
+                case 'Private video':
+                    await interaction.editReply({ content: "The requested video is private." });
+                    break;
+                case 'This video is age-restricted':
+                    await interaction.editReply({ content: "The requested video is age-restricted and cannot be played." });
+                    break;
+                case 'Video unavailable':
+                    await interaction.editReply({ content: "The requested video is unavailable." });
+                    break;
+                default:
+                    await interaction.editReply({ content: "An error occurred while fetching video info." });
+            }
         }
         queue.songs.push(song);
         embed
