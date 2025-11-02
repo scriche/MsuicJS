@@ -1,5 +1,5 @@
 # Use official Node.js LTS image
-FROM node:20-slim
+FROM node:24-slim
 
 # Install yt-dlp and ffmpeg for audio extraction
 RUN apt-get update && \

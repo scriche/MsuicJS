@@ -18,7 +18,16 @@ const queues = new Map();
 
 client.once(Events.ClientReady, () => {
     console.log(`${client.user.tag} has connected to Discord!`);
-    client.user.setActivity("Music");
+    client.user.setActivity("Playing Music");
+    const commands = [
+        new SlashCommandBuilder().setName('play').setDescription('Play a song from YouTube').addStringOption(option => option.setName('query').setDescription('The song name or URL').setRequired(true)),
+        new SlashCommandBuilder().setName('skip').setDescription('Skip the current song'),
+        new SlashCommandBuilder().setName('stop').setDescription('Stop playback and clear the queue'),
+        new SlashCommandBuilder().setName('gaming').setDescription('Play a random gaming music track'),
+        new SlashCommandBuilder().setName('fix').setDescription('Fix the bot by restarting it')
+    ];
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    rest.put(Routes.applicationCommands(client.user.id), { body: commands });
 });
 
 async function fetchPlaylistEntries(playlistUrl) {
@@ -383,6 +392,10 @@ client.on(Events.InteractionCreate, async interaction => {
                 console.error('Gaming playlist error:', e);
                 await interaction.editReply({ content: "Failed to load gaming playlist." });
             }
+        } else if (commandName === 'fix') {
+            // restart the container by stopping the process
+            await interaction.reply("Restarting the bot...");
+            process.exit(0);
         }
     } catch (e) {
         console.error('Interaction handler error:', e);
