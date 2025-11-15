@@ -32,7 +32,7 @@ client.once(Events.ClientReady, () => {
 
 async function fetchPlaylistEntries(playlistUrl) {
     return new Promise((resolve, reject) => {
-        exec(`yt-dlp --flat-playlist --dump-single-json "${playlistUrl}"`, (err, stdout, stderr) => {
+        exec(`yt-dlp --flat-playlist --dump-single-json --js-runtime node "${playlistUrl}"`, (err, stdout, stderr) => {
             if (err) {
                 console.error('yt-dlp playlist error:', err, stderr);
                 return reject(err);
@@ -208,6 +208,7 @@ async function fetchVideoInfo(urlOrQuery) {
         const args = [
             urlOrQuery.startsWith('http') ? urlOrQuery : `ytsearch1:${urlOrQuery}`,
             '-f', 'bestaudio[ext=webm][acodec=opus][abr<=128]/bestaudio',
+            '--js-runtime', 'node',
             '-q',
             '-j' // dump json
         ];
