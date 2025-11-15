@@ -142,26 +142,9 @@ async function queueSong({ interaction, query, guild, member, channel }) {
         try {
             song = await fetchVideoInfo(query, queryType);
         } catch (e) {
-            // Handle error and inform user gracefully
-            switch (e.message) {
-                case 'No audio URL found':
-                    await interaction.editReply({ content: "Could not extract audio from the provided URL." });
-                    break;
-                case 'Video not found':
-                    await interaction.editReply({ content: "The requested video could not be found." });
-                    break;
-                case 'Private video':
-                    await interaction.editReply({ content: "The requested video is private." });
-                    break;
-                case 'This video is age-restricted':
-                    await interaction.editReply({ content: "The requested video is age-restricted and cannot be played." });
-                    break;
-                case 'Video unavailable':
-                    await interaction.editReply({ content: "The requested video is unavailable." });
-                    break;
-                default:
-                    await interaction.editReply({ content: "An error occurred while fetching video info." });
-            }
+            console.error('Error fetching video info:', e);
+            await interaction.editReply({ content: "An error occurred while fetching video info." });
+            return;
         }
         queue.songs.push(song);
         embed
@@ -390,7 +373,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 await queueSong({ interaction, query: randomEntry.url, guild, member, channel });
             } catch (e) {
                 console.error('Gaming playlist error:', e);
-                await interaction.editReply({ content: "Failed to load gaming playlist." });
+                await interaction.editReply({ content: "Video unavailable." });
             }
         } else if (commandName === 'fix') {
             // restart the container by stopping the process
