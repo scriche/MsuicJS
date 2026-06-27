@@ -376,6 +376,21 @@ client.on(Events.InteractionCreate, async interaction => {
                 console.error('Gaming playlist error:', e);
                 await interaction.editReply({ content: "Video unavailable." });
             }
+        } else if (commandName === 'bb') {
+            const playlisturl = "https://youtube.com/playlist?list=PLT1Q6ojTeAE8Zr_tlQkm6E3NLvP1sWmT_&si=O43a9mfBuj6b8vze";
+            await interaction.reply("**Emir loves big bootie**...");
+            try {
+                const playlist = await fetchPlaylistEntries(playlisturl);
+                if (!playlist.entries || playlist.entries.length === 0) {
+                    await interaction.editReply({ content: "No songs found in big bootie playlist." });
+                    return;
+                }
+                const randomEntry = playlist.entries[Math.floor(Math.random() * playlist.entries.length)];
+                await queueSong({ interaction, query: randomEntry.url, guild, member, channel });
+            } catch (e) {
+                console.error('Big Bootie playlist error:', e);
+                await interaction.editReply({ content: "Video unavailable." });
+            }
         } else if (commandName === 'fix') {
             // restart the container by stopping the process
             await interaction.reply("Restarting the bot...");
