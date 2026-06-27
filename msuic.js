@@ -24,7 +24,8 @@ client.once(Events.ClientReady, () => {
         new SlashCommandBuilder().setName('skip').setDescription('Skip the current song'),
         new SlashCommandBuilder().setName('stop').setDescription('Stop playback and clear the queue'),
         new SlashCommandBuilder().setName('gaming').setDescription('Play a random gaming music track'),
-        new SlashCommandBuilder().setName('fix').setDescription('Fix the bot by restarting it')
+        new SlashCommandBuilder().setName('fix').setDescription('Fix the bot by restarting it'),
+        new SlashCommandBuilder().setName('bb').setDescription('Play a random big bootie track')
     ];
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     rest.put(Routes.applicationCommands(client.user.id), { body: commands });
