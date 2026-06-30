@@ -1,9 +1,9 @@
 // Full-featured Discord Music Bot in JavaScript (discord.js v14)
 // Includes: Queue, YouTube search, playlist support, reconnects, slash commands
 
-const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, Collection, Events, EmbedBuilder, InteractionResponseFlags, MessageFlags } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, Collection, Events, EmbedBuilder, MessageFlags } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, getVoiceConnection, AudioPlayerStatus, StreamType } = require('@discordjs/voice');
-const { spawn, exec } = require('child_process');
+const { spawn, execFile } = require('child_process');
 
 const client = new Client({
     intents: [
@@ -33,7 +33,15 @@ client.once(Events.ClientReady, () => {
 
 async function fetchPlaylistEntries(playlistUrl) {
     return new Promise((resolve, reject) => {
-        exec(`yt-dlp --flat-playlist --dump-single-json --js-runtime node "${playlistUrl}"`, (err, stdout, stderr) => {
+        // execFile with an args array (no shell) avoids passing the URL through
+        // a shell, which previously allowed shell metacharacters in a user-supplied
+        // query to be interpreted/executed.
+        execFile('yt-dlp', [
+            '--flat-playlist',
+            '--dump-single-json',
+            '--js-runtimes', 'node',
+            playlistUrl
+        ], { maxBuffer: 1024 * 1024 * 20 }, (err, stdout, stderr) => {
             if (err) {
                 console.error('yt-dlp playlist error:', err, stderr);
                 return reject(err);
@@ -86,11 +94,15 @@ async function queueSong({ interaction, query, guild, member, channel }) {
         return;
     }
 
-    // Categorise query
+    // Categorise query: only treat it as a playlist if it's actually a
+    // youtube.com/playlist URL with a list= param, not just a search that
+    // happens to contain the word "playlist".
     let queryType = 'search';
-    if (query.toLowerCase().includes('playlist')) {
+    const isYoutubeUrl = /^https?:\/\/(www\.|music\.)?(youtube\.com|youtu\.be)\//i.test(query);
+    const isPlaylistUrl = isYoutubeUrl && /\/playlist(\?|$)/i.test(query) && /[?&]list=/i.test(query);
+    if (isPlaylistUrl) {
         queryType = 'playlist';
-    } else if (query.includes('youtube.com') || query.includes('youtu.be')) {
+    } else if (isYoutubeUrl) {
         queryType = 'url';
     }
 
@@ -160,9 +172,9 @@ async function queueSong({ interaction, query, guild, member, channel }) {
         console.error('Failed to send embed reply:', e);
     }
 
-    const { DAVESession } = require('@snazzah/davey');
-
-    // join the voice channel normally first
+    // Join the voice channel. @discordjs/voice (with @snazzah/davey installed,
+    // which it bundles) negotiates Discord's end-to-end encrypted voice
+    // protocol (DAVE) automatically - no manual session setup is needed here.
     let connection = getVoiceConnection(guild.id);
     if (!connection) {
         connection = joinVoiceChannel({
@@ -174,20 +186,6 @@ async function queueSong({ interaction, query, guild, member, channel }) {
         });
     }
 
-    // create DAVE session and bind it to the connection
-    let dave = queues.get(`${guild.id}-dave`);
-    if (!dave) {
-        dave = new DAVESession(
-            1,                 // protocol version
-            client.user.id,    // bot user ID (string)
-            voiceChannel.id,   // voice channel ID (string)
-            null               // let it generate a key pair
-        );
-        queues.set(`${guild.id}-dave`, dave);
-
-        // tell the voice connection to use DAVE
-        connection.configureNetworking(dave);
-    }
     // Only start playback if nothing is currently playing
     if (wasEmpty) {
         // Check if a player is already playing
@@ -209,7 +207,7 @@ async function fetchVideoInfo(urlOrQuery) {
         const args = [
             urlOrQuery.startsWith('http') ? urlOrQuery : `ytsearch1:${urlOrQuery}`,
             '-f', 'bestaudio[ext=webm][acodec=opus][abr<=128]/bestaudio',
-            '--js-runtime', 'node',
+            '--js-runtimes', 'node',
             '-q',
             '-j' // dump json
         ];
@@ -342,8 +340,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 player.removeAllListeners(AudioPlayerStatus.Idle);
                 try { player.stop(true); } catch (e) { console.error('Error stopping player:', e); }
                 // Only play next if there are songs left in the queue
-                const queue = queues.get(guild.id);
-                const hasNext = queue && queue.songs.length > 0;
+                const hasNext = queue.songs.length > 0;
                 if (hasNext) {
                     if (player.state.status === AudioPlayerStatus.Idle) {
                         playNext(guild.id, channel);

@@ -7,8 +7,8 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@discordjs/voice": "0.19.0",
-    "discord.js": "14.23.2",
+    "@discordjs/voice": "0.19.2",
+    "discord.js": "14.26.4",
     "@snazzah/davey": "0.1.7"
   }
 }
