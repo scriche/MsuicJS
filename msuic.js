@@ -2,7 +2,7 @@
 // Includes: Queue, YouTube search, playlist support, reconnects, slash commands
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, Collection, Events, EmbedBuilder, MessageFlags } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, getVoiceConnection, AudioPlayerStatus, StreamType } = require('@discordjs/voice');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, getVoiceConnection, AudioPlayerStatus, StreamType, entersState, VoiceConnectionStatus } = require('@discordjs/voice');
 const { spawn, execFile } = require('child_process');
 
 const client = new Client({
@@ -184,6 +184,14 @@ async function queueSong({ interaction, query, guild, member, channel }) {
             selfDeaf: true,
             selfMute: false,
         });
+        try {
+            await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+        } catch (e) {
+            console.error('Voice connection never became ready:', e);
+            try { connection.destroy(); } catch {}
+            await interaction.editReply({ content: "Couldn't establish a stable voice connection, please try again." });
+            return;
+        }
     }
 
     // Only start playback if nothing is currently playing
@@ -232,7 +240,8 @@ async function fetchVideoInfo(urlOrQuery) {
                     title: info.title,
                     url: info.webpage_url,
                     videoId: info.id || info.video_id || 'unknown',
-                    audioUrl: info.url
+                    audioUrl: info.url,
+                    headers: info.http_headers || null
                 });
             } catch (e) {
                 reject(e);
@@ -241,22 +250,32 @@ async function fetchVideoInfo(urlOrQuery) {
     });
 }
 
-async function streamAudio(url) {
-    const ffmpeg = spawn('ffmpeg', [
+async function streamAudio(url, headers) {
+    const args = [
         '-reconnect', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '5',
+    ];
+
+    if (headers && Object.keys(headers).length > 0) {
+        const headerBlock = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\r\n') + '\r\n';
+        args.push('-headers', headerBlock);
+    }
+
+    args.push(
         '-i', url,
         '-analyzeduration', '0',
-        '-loglevel', '0',
-        '-f', 'webm',
+        '-loglevel', 'warning',
+        '-f', 'opus',
         '-map', 'a',
         '-acodec', 'libopus',
         '-ar', '48000',
         '-ac', '2',
         '-b:a', '96k',
         'pipe:1'
-    ]);
+    );
+
+    const ffmpeg = spawn('ffmpeg', args);
 
     ffmpeg.stderr.on('data', data => {
         console.error(`ffmpeg stderr: ${data}`);
@@ -266,9 +285,22 @@ async function streamAudio(url) {
         console.error('Failed to start ffmpeg:', err);
     });
 
-    return createAudioResource(ffmpeg.stdout, {
-        inputType: StreamType.WebmOpus
+    ffmpeg.on('close', (code, signal) => {
+        // SIGKILL means we intentionally killed it (skip/new song) - not an error
+        if (code !== 0 && signal !== 'SIGKILL') {
+            console.error(`ffmpeg for ${url} exited unexpectedly (code ${code}, signal ${signal})`);
+        }
     });
+
+    return {
+        resource: createAudioResource(ffmpeg.stdout, { inputType: StreamType.OggOpus }),
+        process: ffmpeg
+    };
+}
+function killLeftoverFfmpeg(connection) {
+    if (connection && connection._ffmpegProcess && !connection._ffmpegProcess.killed) {
+        try { connection._ffmpegProcess.kill('SIGKILL'); } catch (e) { console.error('Error killing ffmpeg process:', e); }
+    }
 }
 
 async function playNext(guildId, channel) {
@@ -289,16 +321,27 @@ async function playNext(guildId, channel) {
     // Remove previous listeners to avoid duplicate events
     player.removeAllListeners(AudioPlayerStatus.Idle);
     player.removeAllListeners('error');
+    killLeftoverFfmpeg(connection);
 
     // Get the next song
-    const song = queue.songs.shift();
+    let song = queue.songs.shift();
+    if (!song.audioUrl) {
+        try {
+            song = { ...song, ...(await fetchVideoInfo(song.url)) };
+        } catch (e) {
+            console.error(`Failed to resolve stream URL for "${song.title}":`, e);
+            return playNext(guildId, channel); // skip it, try the next song
+        }
+    }
     // Add error handler to prevent crashes
     player.on('error', (err) => {
         console.error('AudioPlayer error:', err);
+        killLeftoverFfmpeg(connection);
         playNext(guildId, channel);
     });
     try {
-        const resource = await streamAudio(song.audioUrl || song.url);
+        const { resource, process } = await streamAudio(song.audioUrl, song.headers);
+        connection._ffmpegProcess = process;
         player.play(resource);
         if (channel && channel.guild) {
             console.log(`Playing: ${song.title} in ${channel.guild.name}`);
@@ -309,7 +352,10 @@ async function playNext(guildId, channel) {
         console.error('Error playing stream:', err);
         return playNext(guildId, channel);
     }
-    player.on(AudioPlayerStatus.Idle, () => playNext(guildId, channel));
+    player.on(AudioPlayerStatus.Idle, () => {
+        killLeftoverFfmpeg(connection);
+        playNext(guildId, channel);
+    });
 }
 
 client.on(Events.InteractionCreate, async interaction => {
@@ -331,14 +377,19 @@ client.on(Events.InteractionCreate, async interaction => {
             }
             if (!queue || queue.songs.length === 0 || !isPlaying) {
                 if (player) {
+                    player.removeAllListeners(AudioPlayerStatus.Idle);
+                    player.removeAllListeners('error');
                     try { player.stop(true); } catch (e) { console.error('Error stopping player:', e); }
                 }
+                killLeftoverFfmpeg(connection);
                 await interaction.reply({ content: "Nothing left to skip. Stopped playback.", flags: MessageFlags.Ephemeral });
                 return;
             }
             if (player) {
                 player.removeAllListeners(AudioPlayerStatus.Idle);
+                player.removeAllListeners('error');
                 try { player.stop(true); } catch (e) { console.error('Error stopping player:', e); }
+                killLeftoverFfmpeg(connection);
                 // Only play next if there are songs left in the queue
                 const hasNext = queue.songs.length > 0;
                 if (hasNext) {
@@ -355,6 +406,7 @@ client.on(Events.InteractionCreate, async interaction => {
         } else if (commandName === 'stop') {
             const connection = getVoiceConnection(guild.id);
             if (connection) {
+                killLeftoverFfmpeg(connection);
                 try { connection.destroy(); } catch (e) { console.error('Error destroying connection:', e); }
             }
             queues.delete(guild.id);
