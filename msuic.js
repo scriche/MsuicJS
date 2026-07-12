@@ -348,6 +348,14 @@ async function playNext(guildId, channel) {
         } else {
             console.log(`Playing: ${song.title}`);
         }
+        entersState(player, AudioPlayerStatus.Playing, 15_000).catch(() => {
+            if (connection._ffmpegProcess !== process) return; // a later song already took over
+            console.error(`"${song.title}" never started playing (stuck buffering) - skipping it`);
+            player.removeAllListeners(AudioPlayerStatus.Idle);
+            killLeftoverFfmpeg(connection);
+            try { player.stop(true); } catch (e) { console.error('Error stopping stuck player:', e); }
+            playNext(guildId, channel);
+        });
     } catch (err) {
         console.error('Error playing stream:', err);
         return playNext(guildId, channel);
@@ -373,7 +381,7 @@ client.on(Events.InteractionCreate, async interaction => {
             let player;
             if (connection && connection.state && connection.state.subscription) {
                 player = connection.state.subscription.player;
-                isPlaying = player && player.state.status === AudioPlayerStatus.Playing;
+                isPlaying = player && (player.state.status === AudioPlayerStatus.Playing || player.state.status === AudioPlayerStatus.Buffering);
             }
             if (!queue || queue.songs.length === 0 || !isPlaying) {
                 if (player) {
