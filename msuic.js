@@ -16,6 +16,27 @@ const client = new Client({
 
 const queues = new Map();
 
+const YTDLP_MIN_GAP_MS = 1500;
+let ytdlpQueueTail = Promise.resolve();
+let lastYtdlpStart = 0;
+let backoffUntil = 0;
+
+function noteRateLimited() {
+    backoffUntil = Date.now() + 15_000;
+}
+
+function waitForYtdlpSlot() {
+    const turn = ytdlpQueueTail.then(async () => {
+        const earliestStart = Math.max(lastYtdlpStart + YTDLP_MIN_GAP_MS, backoffUntil);
+        const wait = earliestStart - Date.now();
+        if (wait > 0) await new Promise(r => setTimeout(r, wait));
+        lastYtdlpStart = Date.now();
+    });
+    ytdlpQueueTail = turn.catch(() => {});
+    return turn;
+}
+
+
 client.once(Events.ClientReady, () => {
     console.log(`${client.user.tag} has connected to Discord!`);
     client.user.setActivity("Playing Music");
@@ -32,6 +53,7 @@ client.once(Events.ClientReady, () => {
 });
 
 async function fetchPlaylistEntries(playlistUrl) {
+    await waitForYtdlpSlot();
     return new Promise((resolve, reject) => {
         // execFile with an args array (no shell) avoids passing the URL through
         // a shell, which previously allowed shell metacharacters in a user-supplied
@@ -44,6 +66,7 @@ async function fetchPlaylistEntries(playlistUrl) {
         ], { maxBuffer: 1024 * 1024 * 20 }, (err, stdout, stderr) => {
             if (err) {
                 console.error('yt-dlp playlist error:', err, stderr);
+                if (/HTTP Error 403|Forbidden/i.test(stderr || '')) noteRateLimited();
                 return reject(err);
             }
             try {
@@ -94,9 +117,6 @@ async function queueSong({ interaction, query, guild, member, channel }) {
         return;
     }
 
-    // Categorise query: only treat it as a playlist if it's actually a
-    // youtube.com/playlist URL with a list= param, not just a search that
-    // happens to contain the word "playlist".
     let queryType = 'search';
     const isYoutubeUrl = /^https?:\/\/(www\.|music\.)?(youtube\.com|youtu\.be)\//i.test(query);
     const isPlaylistUrl = isYoutubeUrl && /\/playlist(\?|$)/i.test(query) && /[?&]list=/i.test(query);
@@ -172,9 +192,6 @@ async function queueSong({ interaction, query, guild, member, channel }) {
         console.error('Failed to send embed reply:', e);
     }
 
-    // Join the voice channel. @discordjs/voice (with @snazzah/davey installed,
-    // which it bundles) negotiates Discord's end-to-end encrypted voice
-    // protocol (DAVE) automatically - no manual session setup is needed here.
     let connection = getVoiceConnection(guild.id);
     if (!connection) {
         connection = joinVoiceChannel({
@@ -210,6 +227,7 @@ async function queueSong({ interaction, query, guild, member, channel }) {
 }
 
 async function fetchVideoInfo(urlOrQuery) {
+    await waitForYtdlpSlot();
     return new Promise((resolve, reject) => {
         // Use yt-dlp to get both info and direct audio URL in one call
         const args = [
@@ -221,14 +239,20 @@ async function fetchVideoInfo(urlOrQuery) {
         ];
         const ytdlp = spawn('yt-dlp', args);
         let output = '';
+        let stderrTail = '';
         ytdlp.stdout.on('data', data => {
             output += data.toString();
         });
         ytdlp.stderr.on('data', data => {
+            stderrTail = (stderrTail + data.toString()).slice(-500);
             console.error(`yt-dlp stderr: ${data}`);
+        });
+        ytdlp.on('error', err => {
+            reject(err);
         });
         ytdlp.on('close', code => {
             if (code !== 0) {
+                if (/HTTP Error 403|Forbidden/i.test(stderrTail)) noteRateLimited();
                 return reject(new Error(`yt-dlp exited with code ${code}`));
             }
             try {
@@ -250,22 +274,70 @@ async function fetchVideoInfo(urlOrQuery) {
     });
 }
 
-async function streamAudio(url, headers) {
-    const args = [
-        '-reconnect', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',
-    ];
+async function startAudioDownload(videoUrl, maxAttempts = 3) {
+    let lastErr;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        await waitForYtdlpSlot();
+        try {
+            return await new Promise((resolve, reject) => {
+                const proc = spawn('yt-dlp', [
+                    videoUrl,
+                    '-f', 'bestaudio[ext=webm][acodec=opus][abr<=128]/bestaudio',
+                    '--js-runtimes', 'node',
+                    '--no-playlist',
+                    '-q',
+                    '-o', '-'
+                ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-    if (headers && Object.keys(headers).length > 0) {
-        const headerBlock = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\r\n') + '\r\n';
-        args.push('-headers', headerBlock);
+                let stderrTail = '';
+                let settled = false;
+
+                proc.stderr.on('data', data => {
+                    stderrTail = (stderrTail + data.toString()).slice(-500);
+                    console.error(`yt-dlp stderr: ${data}`);
+                });
+                proc.on('error', err => {
+                    console.error('yt-dlp process error:', err);
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(handoffTimer);
+                    reject(err);
+                });
+                const handoffTimer = setTimeout(() => {
+                    if (settled) return;
+                    settled = true;
+                    resolve(proc);
+                }, 3000);
+                proc.once('close', (code, signal) => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(handoffTimer);
+                    if (code !== 0 && signal !== 'SIGKILL') {
+                        if (/HTTP Error 403|Forbidden/i.test(stderrTail)) noteRateLimited();
+                        reject(new Error(`yt-dlp exited early (code ${code}): ${stderrTail || 'no output'}`));
+                    } else {
+                        resolve(proc);
+                    }
+                });
+            });
+        } catch (e) {
+            lastErr = e;
+            console.error(`yt-dlp attempt ${attempt}/${maxAttempts} for ${videoUrl} failed: ${e.message}`);
+            if (attempt < maxAttempts) {
+                await new Promise(r => setTimeout(r, attempt * 2000));
+            }
+        }
     }
+    throw lastErr;
+}
 
-    args.push(
-        '-i', url,
+async function streamAudio(videoUrl) {
+    const ytdlp = await startAudioDownload(videoUrl);
+
+    const ffmpeg = spawn('ffmpeg', [
         '-analyzeduration', '0',
         '-loglevel', 'warning',
+        '-i', 'pipe:0',
         '-f', 'opus',
         '-map', 'a',
         '-acodec', 'libopus',
@@ -273,9 +345,15 @@ async function streamAudio(url, headers) {
         '-ac', '2',
         '-b:a', '96k',
         'pipe:1'
-    );
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
-    const ffmpeg = spawn('ffmpeg', args);
+    ffmpeg.stdin.on('error', err => {
+        if (err.code !== 'EPIPE' && err.code !== 'EOF') console.error('ffmpeg stdin error:', err);
+    });
+    ytdlp.stdout.on('error', err => {
+        if (err.code !== 'EPIPE' && err.code !== 'EOF') console.error('yt-dlp stdout error:', err);
+    });
+    ytdlp.stdout.pipe(ffmpeg.stdin);
 
     ffmpeg.stderr.on('data', data => {
         console.error(`ffmpeg stderr: ${data}`);
@@ -288,18 +366,30 @@ async function streamAudio(url, headers) {
     ffmpeg.on('close', (code, signal) => {
         // SIGKILL means we intentionally killed it (skip/new song) - not an error
         if (code !== 0 && signal !== 'SIGKILL') {
-            console.error(`ffmpeg for ${url} exited unexpectedly (code ${code}, signal ${signal})`);
+            console.error(`ffmpeg for ${videoUrl} exited unexpectedly (code ${code}, signal ${signal})`);
+        }
+        if (ytdlp.exitCode === null && ytdlp.signalCode === null && !ytdlp.killed) {
+            try { ytdlp.kill('SIGKILL'); } catch (e) { console.error('Error killing yt-dlp after ffmpeg close:', e); }
+        }
+    });
+    ytdlp.on('close', (code, signal) => {
+        if (code !== 0 && signal !== 'SIGKILL') {
+            console.error(`yt-dlp for ${videoUrl} exited unexpectedly (code ${code}, signal ${signal})`);
         }
     });
 
     return {
         resource: createAudioResource(ffmpeg.stdout, { inputType: StreamType.OggOpus }),
-        process: ffmpeg
+        process: ffmpeg,
+        ytdlpProcess: ytdlp
     };
 }
 function killLeftoverFfmpeg(connection) {
-    if (connection && connection._ffmpegProcess && !connection._ffmpegProcess.killed) {
+    if (connection && connection._ffmpegProcess && connection._ffmpegProcess.exitCode === null && connection._ffmpegProcess.signalCode === null && !connection._ffmpegProcess.killed) {
         try { connection._ffmpegProcess.kill('SIGKILL'); } catch (e) { console.error('Error killing ffmpeg process:', e); }
+    }
+    if (connection && connection._ytdlpProcess && connection._ytdlpProcess.exitCode === null && connection._ytdlpProcess.signalCode === null && !connection._ytdlpProcess.killed) {
+        try { connection._ytdlpProcess.kill('SIGKILL'); } catch (e) { console.error('Error killing yt-dlp process:', e); }
     }
 }
 
@@ -323,16 +413,7 @@ async function playNext(guildId, channel) {
     player.removeAllListeners('error');
     killLeftoverFfmpeg(connection);
 
-    // Get the next song
     let song = queue.songs.shift();
-    if (!song.audioUrl) {
-        try {
-            song = { ...song, ...(await fetchVideoInfo(song.url)) };
-        } catch (e) {
-            console.error(`Failed to resolve stream URL for "${song.title}":`, e);
-            return playNext(guildId, channel); // skip it, try the next song
-        }
-    }
     // Add error handler to prevent crashes
     player.on('error', (err) => {
         console.error('AudioPlayer error:', err);
@@ -340,15 +421,16 @@ async function playNext(guildId, channel) {
         playNext(guildId, channel);
     });
     try {
-        const { resource, process } = await streamAudio(song.audioUrl, song.headers);
+        const { resource, process, ytdlpProcess } = await streamAudio(song.url);
         connection._ffmpegProcess = process;
+        connection._ytdlpProcess = ytdlpProcess;
         player.play(resource);
         if (channel && channel.guild) {
             console.log(`Playing: ${song.title} in ${channel.guild.name}`);
         } else {
             console.log(`Playing: ${song.title}`);
         }
-        entersState(player, AudioPlayerStatus.Playing, 15_000).catch(() => {
+        entersState(player, AudioPlayerStatus.Playing, 20_000).catch(() => {
             if (connection._ffmpegProcess !== process) return; // a later song already took over
             console.error(`"${song.title}" never started playing (stuck buffering) - skipping it`);
             player.removeAllListeners(AudioPlayerStatus.Idle);
