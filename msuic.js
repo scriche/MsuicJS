@@ -55,13 +55,12 @@ client.once(Events.ClientReady, () => {
 async function fetchPlaylistEntries(playlistUrl) {
     await waitForYtdlpSlot();
     return new Promise((resolve, reject) => {
-        // execFile with an args array (no shell) avoids passing the URL through
-        // a shell, which previously allowed shell metacharacters in a user-supplied
-        // query to be interpreted/executed.
+
         execFile('yt-dlp', [
             '--flat-playlist',
             '--dump-single-json',
             '--js-runtimes', 'node',
+            '-4',
             playlistUrl
         ], { maxBuffer: 1024 * 1024 * 20 }, (err, stdout, stderr) => {
             if (err) {
@@ -234,6 +233,7 @@ async function fetchVideoInfo(urlOrQuery) {
             urlOrQuery.startsWith('http') ? urlOrQuery : `ytsearch1:${urlOrQuery}`,
             '-f', 'bestaudio[ext=webm][acodec=opus][abr<=128]/bestaudio',
             '--js-runtimes', 'node',
+            '-4',
             '-q',
             '-j' // dump json
         ];
@@ -255,6 +255,9 @@ async function fetchVideoInfo(urlOrQuery) {
                 if (/HTTP Error 403|Forbidden/i.test(stderrTail)) noteRateLimited();
                 return reject(new Error(`yt-dlp exited with code ${code}`));
             }
+            if (!output.trim()) {
+                return reject(new Error(`yt-dlp returned no data for "${urlOrQuery}"`));
+            }
             try {
                 const info = JSON.parse(output);
                 if (!info.url) {
@@ -274,20 +277,26 @@ async function fetchVideoInfo(urlOrQuery) {
     });
 }
 
-async function startAudioDownload(videoUrl, maxAttempts = 3) {
+const YTDLP_CLIENT_FALLBACKS = [null, 'android', 'tv'];
+
+async function startAudioDownload(videoUrl, maxAttempts = YTDLP_CLIENT_FALLBACKS.length) {
     let lastErr;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         await waitForYtdlpSlot();
         try {
             return await new Promise((resolve, reject) => {
-                const proc = spawn('yt-dlp', [
+                const client = YTDLP_CLIENT_FALLBACKS[(attempt - 1) % YTDLP_CLIENT_FALLBACKS.length];
+                const args = [
                     videoUrl,
                     '-f', 'bestaudio[ext=webm][acodec=opus][abr<=128]/bestaudio',
                     '--js-runtimes', 'node',
                     '--no-playlist',
+                    '-4', // force IPv4 - YouTube's bot detection is noticeably more aggressive over IPv6 on datacenter hosts
                     '-q',
                     '-o', '-'
-                ], { stdio: ['ignore', 'pipe', 'pipe'] });
+                ];
+                if (client) args.push('--extractor-args', `youtube:player_client=${client}`);
+                const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
                 let stderrTail = '';
                 let settled = false;
@@ -364,7 +373,6 @@ async function streamAudio(videoUrl) {
     });
 
     ffmpeg.on('close', (code, signal) => {
-        // SIGKILL means we intentionally killed it (skip/new song) - not an error
         if (code !== 0 && signal !== 'SIGKILL') {
             console.error(`ffmpeg for ${videoUrl} exited unexpectedly (code ${code}, signal ${signal})`);
         }
